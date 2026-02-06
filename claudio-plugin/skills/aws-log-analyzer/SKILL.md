@@ -16,22 +16,15 @@ Troubleshoot and analyze logs from AWS CloudWatch Logs - AWS's centralized loggi
 - Appropriate IAM permissions for CloudWatch Logs read operations
 
 **Installation:**
-Use the centralized tool installation scripts to install dependencies:
+Use the centralized tool installation scripts:
 
 ```bash
-# AWS CLI (required)
-../../../tools/aws-cli/install.sh          # Check and install AWS CLI
-../../../tools/aws-cli/install.sh --check  # Check only, don't install
+# Check and install AWS CLI (required)
+../../../tools/aws-cli/install.sh
 
-# jq (optional, recommended)
-../../../tools/jq/install.sh               # Check and install jq
-../../../tools/jq/install.sh --check       # Check only, don't install
+# Check and install jq (optional, recommended)
+../../../tools/jq/install.sh
 ```
-
-The tool scripts are idempotent - safe to run multiple times. They will only install if the tool is not present or outdated.
-
-**Philosophy:**
-Start broad, then narrow down. List log groups → identify relevant streams → filter/query specific events. Use CloudWatch Logs Insights for complex analysis.
 
 ## Core Concepts
 
@@ -40,496 +33,763 @@ Start broad, then narrow down. List log groups → identify relevant streams →
 - **Log Event**: Individual log entry with timestamp and message
 - **CloudWatch Logs Insights**: SQL-like query language for advanced log analysis
 
-## Basic Commands
+## Analysis Philosophy
 
-### List Log Groups
+**Always follow this pattern:**
+1. Start broad → identify the problem scope
+2. Narrow down → focus on specific errors or patterns
+3. Filter noise → exclude known non-critical errors
+4. Analyze distribution → understand when errors occur
+
+**Use CloudWatch Logs Insights for all error analysis** - it supports case-insensitive regex, which is essential because logs may contain "error", "Error", or "ERROR" in different formats.
+
+## Output Format
+
+**All scripts output JSON by default** to make results easy to parse programmatically by AI assistants and automation tools.
+
+**⚠️ RECOMMENDATION: Use full JSON output for typical error analysis**
+
+For most use cases, **direct JSON output is more efficient** than state management:
+- ✅ Single round-trip - get all data in one call
+- ✅ No state lookup complexity - data is immediately available
+- ✅ Reliable - no session ID or file path issues
+- ✅ For typical analyses (even 10K+ errors), JSON output is manageable (~30KB)
+
+**Only use `--save-state` (via state management scripts) if:**
+- You're analyzing 100K+ log entries
+- The JSON output exceeds 100KB
+- You need to reference the same data across multiple analysis steps over time
+
+**Recommended approach - get all data in one call:**
+```bash
+# Run analysis and capture full JSON output
+OUTPUT=$(./scripts/analyze_errors.sh <log-group> 24)
+
+# Parse specific fields as needed
+echo "$OUTPUT" | jq '.total_errors'
+echo "$OUTPUT" | jq '.by_severity'
+echo "$OUTPUT" | jq '.top_errors[:5]'
+```
+
+### JSON Output (Default)
 
 ```bash
-# List all log groups
-aws logs describe-log-groups
+# Default: JSON output to stdout, progress to stderr
+./scripts/analyze_errors.sh /aws/app/myapp 24
 
-# List with filtering
-aws logs describe-log-groups --log-group-name-prefix /aws/lambda/
-
-# Get specific details with jq
-aws logs describe-log-groups --query 'logGroups[*].[logGroupName,storedBytes]' --output table
+# Output:
+{
+  "log_group": "/aws/app/myapp",
+  "hours_analyzed": 24,
+  "total_errors": "1247",
+  "by_severity": {
+    "critical": 15,
+    "error": 1200,
+    "warning": 25,
+    "failed": 7
+  },
+  "top_errors": [
+    {
+      "message": "Connection timeout to database",
+      "count": 342,
+      "percentage": 27.43,
+      "pattern": "Connection timeout to database"
+    },
+    ...
+  ],
+  "critical_errors": [...],
+  "top_errors_by_pattern": [
+    {
+      "pattern": "Error at <TIMESTAMP>",
+      "total_count": 450,
+      "occurrences": 12,
+      "examples": [
+        {"message": "Error at 2026-02-06 15:30:45", "count": 120},
+        {"message": "Error at 2026-02-06 16:45:12", "count": 95}
+      ]
+    },
+    ...
+  ],
+  "hourly_distribution": [...],
+  "comparison": null  // or populated if --compare-previous is used
+}
 ```
 
-### List Log Streams
+**With additional flags:**
 
 ```bash
-# List log streams in a group
-aws logs describe-log-streams --log-group-name <log-group-name>
+# Exclude noise patterns and compare with previous period
+./scripts/analyze_errors.sh /aws/app/myapp 24 --exclude-noise --compare-previous
 
-# List recent streams (sorted by last event time)
-aws logs describe-log-streams \
-  --log-group-name <log-group-name> \
-  --order-by LastEventTime \
-  --descending \
-  --max-items 10
-
-# Find streams by prefix
-aws logs describe-log-streams \
-  --log-group-name <log-group-name> \
-  --log-stream-name-prefix <prefix>
+# Output includes comparison data:
+{
+  ...
+  "comparison": {
+    "current_period": {"total_errors": 1247, "hours": 24},
+    "previous_period": {"total_errors": 1050, "hours": 24},
+    "change": "+18.76%",
+    "trend": "increasing"
+  }
+}
 ```
 
-### Get Log Events
+**Benefits:**
+- **Structured data** - Easy to parse and extract specific fields
+- **Clean separation** - Progress messages go to stderr, results to stdout
+- **Consistent format** - All scripts use the same JSON structure pattern
+- **AI-friendly** - Models can easily process and reason about JSON
+
+### Human-Readable Output
+
+Add `--human` flag for human-readable table/text format:
 
 ```bash
-# Get events from a specific stream
-aws logs get-log-events \
-  --log-group-name <log-group-name> \
-  --log-stream-name <log-stream-name>
+./scripts/analyze_errors.sh /aws/app/myapp 24 --human
 
-# Get recent events (last N)
-aws logs get-log-events \
-  --log-group-name <log-group-name> \
-  --log-stream-name <log-stream-name> \
-  --limit 100
+# Output:
+=== Error Analysis Results ===
+Log Group: /aws/app/myapp
+Total Errors: 1247
 
-# Get events in time range (epoch milliseconds)
-aws logs get-log-events \
-  --log-group-name <log-group-name> \
-  --log-stream-name <log-stream-name> \
-  --start-time <start-epoch-ms> \
-  --end-time <end-epoch-ms>
+Top Errors by Frequency:
+  342x: Connection timeout to database
+  125x: Authentication failed...
+  ...
 ```
 
-### Filter Log Events
+### Parsing JSON Output
 
-**Most useful for troubleshooting** - searches across multiple streams:
+**In the model context:**
+```bash
+# Extract specific field
+./scripts/analyze_errors.sh /aws/app/myapp 24 | jq '.total_errors'
+
+# Count distinct error types
+./scripts/analyze_errors.sh /aws/app/myapp 24 | jq '.top_errors | length'
+
+# Get top 3 errors
+./scripts/analyze_errors.sh /aws/app/myapp 24 | jq '.top_errors[:3]'
+```
+
+---
+
+## State Management
+
+**⚠️ IMPORTANT: State management is for advanced use cases only**
+
+The state management system (`~/.aws-log-analyzer/state/`) is available for very large datasets or multi-step workflows, but is **NOT recommended for typical error analysis**.
+
+**Why direct JSON output is better:**
+- ✅ Simpler - no session IDs or file paths to manage
+- ✅ Faster - single round-trip instead of save → view → parse
+- ✅ More reliable - no file system dependencies
+- ✅ Efficient even for 10K+ errors (~30KB JSON)
+
+**Note:** `analyze_errors.sh` no longer supports the `--save-state` flag. Use direct JSON output instead (see examples above).
+
+### Manual State Management (Advanced)
+
+If you need state management for very large datasets (100K+ entries), you can manually save/load data:
 
 ```bash
-# Filter events across all streams in a log group
-aws logs filter-log-events \
-  --log-group-name <log-group-name> \
-  --filter-pattern "ERROR"
+# Capture output and save manually if needed
+OUTPUT=$(./scripts/analyze_errors.sh <log-group> 24)
+echo "$OUTPUT" > /tmp/analysis_result.json
 
-# Filter with time range
-aws logs filter-log-events \
-  --log-group-name <log-group-name> \
-  --filter-pattern "ERROR" \
-  --start-time <start-epoch-ms> \
-  --end-time <end-epoch-ms>
-
-# Filter specific log streams
-aws logs filter-log-events \
-  --log-group-name <log-group-name> \
-  --log-stream-names <stream1> <stream2> \
-  --filter-pattern "ERROR"
-
-# Output with jq for better formatting
-aws logs filter-log-events \
-  --log-group-name <log-group-name> \
-  --filter-pattern "ERROR" \
-  | jq -r '.events[] | "\(.timestamp | tonumber / 1000 | strftime("%Y-%m-%d %H:%M:%S")) [\(.logStreamName)] \(.message)"'
+# Later, load and parse
+jq '.top_errors[:10]' /tmp/analysis_result.json
 ```
 
-### Tail Logs in Real-Time
+**View saved state:**
 
 ```bash
-# Tail logs (follow mode)
-aws logs tail <log-group-name> --follow
+# List all saved states
+./scripts/view_state.sh
 
-# Tail with filter
-aws logs tail <log-group-name> --follow --filter-pattern "ERROR"
+# View specific state by ID
+./scripts/view_state.sh analyze_errors_1707224567
 
-# Tail since specific time
-aws logs tail <log-group-name> --since 1h --follow
-
-# Tail specific streams
-aws logs tail <log-group-name> --follow --log-stream-names <stream-name>
+# View latest state for an operation
+./scripts/view_state.sh analyze_errors
 ```
 
-**Time formats for --since:**
-- `1h` - last hour
-- `30m` - last 30 minutes
-- `2d` - last 2 days
-- `5s` - last 5 seconds
+### When to Use State
 
-## CloudWatch Logs Insights
+**Use `--save-state` when:**
+- Working with the model and want to minimize token usage
+- Results are large (thousands of log entries, many error types)
+- Building multi-step workflows where later steps reference earlier results
 
-For complex queries and analysis, use CloudWatch Logs Insights:
+**Don't use `--save-state` when:**
+- Running scripts manually and want immediate full output
+- Results are small and fit easily in context
+- Doing one-off investigations
+
+### Querying Saved State
+
+**Once data is saved, you can extract specific information using jq:**
 
 ```bash
-# Run an Insights query
-aws logs start-query \
-  --log-group-name <log-group-name> \
-  --start-time <start-epoch-seconds> \
-  --end-time <end-epoch-seconds> \
-  --query-string '<insights-query>'
+# Get the total error count
+./scripts/view_state.sh analyze_errors | jq '.total_errors'
 
-# Get query results (after starting query)
-aws logs get-query-results --query-id <query-id>
+# Get top 5 errors with their counts
+./scripts/view_state.sh analyze_errors | jq '.top_errors[0:5][] | {message: .message, count: .count}'
+
+# Get only critical errors (count > 10)
+./scripts/view_state.sh analyze_errors | jq '.critical_errors[] | select(.count > 10)'
+
+# Get severity breakdown
+./scripts/view_state.sh analyze_errors | jq '.by_severity'
+
+# Get errors from a specific time bucket
+./scripts/view_state.sh analyze_errors | jq '.hourly_distribution[] | select(.time_bucket | contains("2026-02-06T15"))'
+
+# Extract error patterns (grouped by similarity)
+./scripts/view_state.sh analyze_errors | jq '.top_errors_by_pattern[0:5]'
+
+# Get all errors matching a specific pattern
+./scripts/view_state.sh analyze_errors | jq '.top_errors[] | select(.pattern | contains("Connection"))'
+
+# Get percentage of errors that are critical
+./scripts/view_state.sh analyze_errors | jq '(.by_severity.critical / (.total_errors | tonumber) * 100)'
+
+# Compare current vs previous period (if --compare-previous was used)
+./scripts/view_state.sh analyze_errors | jq '.comparison'
+
+# Get examples of a specific error pattern
+./scripts/view_state.sh analyze_errors | jq '.top_errors_by_pattern[0].examples'
 ```
 
-**Common Insights Query Patterns:**
-
-```sql
-# Count errors by type
-fields @timestamp, @message
-| filter @message like /ERROR/
-| stats count() by @message
-| sort count desc
-
-# Find slowest requests
-fields @timestamp, duration, request_id
-| filter duration > 1000
-| sort duration desc
-| limit 20
-
-# Error rate over time
-fields @timestamp, @message
-| filter @message like /ERROR/
-| stats count() as error_count by bin(5m)
-
-# Parse JSON logs and aggregate
-fields @timestamp, @message
-| parse @message '{"level":"*","msg":"*","user":"*"}' as level, msg, user
-| filter level = "ERROR"
-| stats count() by user
-
-# Find exceptions with stack traces
-fields @timestamp, @message
-| filter @message like /Exception/
-| display @timestamp, @message
-| limit 50
-```
-
-## Filter Pattern Syntax
-
-CloudWatch Logs supports pattern matching for filtering:
-
-**Basic patterns:**
-```bash
-# Exact match
---filter-pattern "ERROR"
-
-# Multiple terms (AND)
---filter-pattern "ERROR timeout"
-
-# Multiple terms (OR)
---filter-pattern "?ERROR ?WARN ?FATAL"
-
-# Exclusion
---filter-pattern "[email protected]"
-
-# Field extraction (JSON logs)
---filter-pattern '{ $.level = "ERROR" }'
-
-# Numeric filtering
---filter-pattern '{ $.status_code >= 500 }'
-
-# Multiple conditions
---filter-pattern '{ $.level = "ERROR" && $.user_id = "12345" }'
-```
-
-**Structured log patterns:**
-```bash
-# Apache/Nginx access logs
---filter-pattern '[ip, user, username, timestamp, request, status_code >= 400, bytes]'
-
-# Custom delimited logs
---filter-pattern '[time, request_id, level = ERROR, message]'
-```
-
-## Troubleshooting Workflows
-
-### Workflow 1: Investigate Recent Errors
-
-**User:** "Check for errors in the past hour for my application"
+**Example workflow using saved state:**
 
 ```bash
-# 1. List log groups to find the right one
-aws logs describe-log-groups --log-group-name-prefix /aws/application
+# Step 1: Analyze errors with state saving
+./scripts/analyze_errors.sh /aws/app/myapp 24 --save-state --exclude-noise
 
-# 2. Calculate time range (epoch milliseconds)
-START_TIME=$(date -d '1 hour ago' +%s)000
-END_TIME=$(date +%s)000
+# Output:
+# {
+#   "operation": "analyze_errors",
+#   "state_saved": true,
+#   "state_id": "analyze_errors_1738858234",
+#   "summary": {
+#     "log_group": "/aws/app/myapp",
+#     "total_errors": 1247,
+#     "top_error_patterns": [...]
+#   }
+# }
 
-# 3. Filter for errors
-aws logs filter-log-events \
-  --log-group-name /aws/application/myapp \
-  --filter-pattern "ERROR" \
-  --start-time $START_TIME \
-  --end-time $END_TIME \
-  | jq -r '.events[] | "\(.timestamp | tonumber / 1000 | strftime("%Y-%m-%d %H:%M:%S")) \(.message)"'
+# Step 2: Query specific details without re-running analysis
+./scripts/view_state.sh analyze_errors | jq '.by_severity'
+# Output: {"critical": 15, "error": 1200, "warning": 25, "failed": 7}
 
-# 4. If too many results, use Insights for aggregation
-QUERY_ID=$(aws logs start-query \
-  --log-group-name /aws/application/myapp \
-  --start-time $START_TIME \
-  --end-time $END_TIME \
-  --query-string 'fields @timestamp, @message | filter @message like /ERROR/ | stats count() by @message | sort count desc' \
-  --query 'queryId' --output text)
+# Step 3: Get top 3 error patterns
+./scripts/view_state.sh analyze_errors | jq '.top_errors_by_pattern[0:3]'
 
-# Wait a few seconds for query to complete
-sleep 5
-
-# Get results
-aws logs get-query-results --query-id $QUERY_ID
+# Step 4: Find all errors with high frequency (> 50 occurrences)
+./scripts/view_state.sh analyze_errors | jq '.top_errors[] | select(.count > 50)'
 ```
 
-### Workflow 2: Trace Request Through Multiple Services
+---
 
-**User:** "Trace request ID abc-123 through all services"
+## Available Scripts
 
+All operations are performed through the following scripts:
+
+### State Management Scripts
+- `view_state.sh` - View saved script outputs (for advanced workflows only)
+  - **Note:** `analyze_errors.sh` no longer supports `--save-state` flag
+  - State management is available through manual save/load if needed for very large datasets
+
+### Discovery Scripts
+- `list_log_groups.sh` - List available log groups
+- `list_log_streams.sh` - List log streams within a group
+
+### Analysis Scripts
+- `analyze_errors.sh` - Complete error analysis (recommended for most cases)
+  - Flags: `--human`, `--exclude-noise`, `--compare-previous`
+  - Features: Severity classification, pattern grouping, trend analysis
+  - **Output:** Full JSON by default (efficient for typical datasets)
+- `find_recent_errors.sh` - Quick search for recent errors
+- `run_insights_query.sh` - Execute custom CloudWatch Logs Insights queries
+- `trace_request.sh` - Trace a request ID across multiple log groups
+
+### Monitoring Scripts
+- `tail_logs.sh` - Monitor logs in real-time
+
+## Template Queries
+
+Pre-built CloudWatch Logs Insights queries are available in `scripts/insights_queries.json`:
+
+**Error Analysis:**
+- `error_analysis.total_count` - Count total errors
+- `error_analysis.by_message` - Group errors by message
+- `error_analysis.unique_errors` - Find unique errors (excludes noise)
+- `error_analysis.hourly_distribution` - Hourly error distribution
+- `error_analysis.recent_errors` - Last 100 errors
+
+**Performance Analysis:**
+- `performance_analysis.slow_requests` - Requests slower than 1s
+- `performance_analysis.latency_percentiles` - P50, P90, P99 latencies
+- `performance_analysis.requests_per_minute` - Request rate
+
+**Request Tracing:**
+- `request_tracing.by_request_id` - Trace by request ID
+- `request_tracing.by_user` - Trace by user ID
+
+**Application Monitoring:**
+- `application_monitoring.status_codes` - HTTP status code distribution
+- `application_monitoring.error_rate` - Error rate percentage
+- `application_monitoring.top_endpoints` - Most accessed endpoints
+
+## Common Workflows
+
+### Workflow 1: Analyze Errors in a Log Group
+
+**User Request:** "Analyze errors for <log-group> in the last 24 hours"
+
+**Execution Sequence:**
 ```bash
-# 1. Find all log groups for the application
-LOG_GROUPS=$(aws logs describe-log-groups \
-  --log-group-name-prefix /aws/myapp \
-  --query 'logGroups[*].logGroupName' \
-  --output text)
-
-# 2. Search each log group for the request ID
-for LOG_GROUP in $LOG_GROUPS; do
-  echo "=== Searching $LOG_GROUP ==="
-  aws logs filter-log-events \
-    --log-group-name "$LOG_GROUP" \
-    --filter-pattern "abc-123" \
-    | jq -r '.events[] | "\(.timestamp | tonumber / 1000 | strftime("%Y-%m-%d %H:%M:%S")) [\(.logStreamName)] \(.message)"'
-done
+# Step 1: Run complete error analysis
+./scripts/analyze_errors.sh <log-group-name> 24
 ```
 
-### Workflow 3: Analyze Performance Issues
+**Output Provides:**
+1. Total error count
+2. Top error messages by frequency
+3. Critical/unique errors (excludes noise)
+4. Hourly error distribution
 
-**User:** "Find slow database queries in the last 24 hours"
-
+**Recommended approach - capture output and parse as needed:**
 ```bash
-# Use Insights for advanced analysis
-START_TIME=$(date -d '24 hours ago' +%s)
-END_TIME=$(date +%s)
+# Step 1: Run analysis and capture full JSON output
+OUTPUT=$(./scripts/analyze_errors.sh <log-group-name> 24)
 
-QUERY_ID=$(aws logs start-query \
-  --log-group-name /aws/rds/instance/mydb/slowquery \
-  --start-time $START_TIME \
-  --end-time $END_TIME \
-  --query-string '
-    fields @timestamp, query_time, lock_time, rows_examined, @message
-    | parse @message /Query_time: (?<qt>[0-9.]+)\s+Lock_time: (?<lt>[0-9.]+).*\n(?<query>.*)/
-    | filter qt > 1.0
-    | sort qt desc
-    | limit 20
-  ' \
-  --query 'queryId' --output text)
+# Step 2: Extract specific fields
+echo "$OUTPUT" | jq '.total_errors'
+# Output: "1247"
 
-sleep 5
-aws logs get-query-results --query-id $QUERY_ID
+echo "$OUTPUT" | jq '.by_severity'
+# Output: {"critical": 15, "error": 1200, "warning": 25, "failed": 7}
+
+echo "$OUTPUT" | jq '.top_errors[:3]'
+# Output: Array of top 3 errors with counts and percentages
+
+# Step 3: Get more details on specific errors if needed
+./scripts/find_recent_errors.sh <log-group-name> 1 50
 ```
 
-### Workflow 4: Monitor for Specific Error Pattern
+**Why this is efficient:**
+- Single execution of analyze_errors.sh gets all data
+- No round-trips to view state
+- No session ID management
+- For typical datasets (even 10K errors), JSON is ~30KB - completely manageable
+- Parse different fields from the same output as needed
 
-**User:** "Watch for OutOfMemory errors in real-time"
+---
 
+### Workflow 2: Investigate Errors (Unknown Log Group)
+
+**User Request:** "Check for errors in my application"
+
+**Execution Sequence:**
 ```bash
-# Tail with filter pattern
-aws logs tail /aws/application/myapp \
-  --follow \
-  --filter-pattern "OutOfMemoryError" \
-  --format short
+# Step 1: Find the log group
+./scripts/list_log_groups.sh /aws/application
+
+# Step 2: Analyze errors in the identified log group
+./scripts/analyze_errors.sh <log-group-name> 24
 ```
 
-## Helper Scripts
+---
 
-This skill includes helper scripts in `scripts/` directory.
+### Workflow 3: Trace a Request Across Services
 
-### Tool Installation
+**User Request:** "Trace request ID abc-123 through all services"
 
-Installation scripts are available in the `claudio-plugin/tools/` directory for all required dependencies:
-
-**AWS CLI (required):**
+**Execution Sequence:**
 ```bash
-# Install or update AWS CLI
-../../../tools/aws-cli/install.sh
-
-# Check installation status
-../../../tools/aws-cli/install.sh --check
+# Single command to search all log groups with a common prefix
+./scripts/trace_request.sh abc-123 /aws/myapp 24
 ```
 
-**jq (optional, recommended):**
+**Output:** Shows all log entries containing the request ID, sorted by timestamp, across all log groups.
+
+---
+
+### Workflow 4: Monitor for Specific Errors in Real-Time
+
+**User Request:** "Watch for OutOfMemory errors in real-time"
+
+**Execution Sequence:**
 ```bash
-# Install or update jq
-../../../tools/jq/install.sh
-
-# Check installation status
-../../../tools/jq/install.sh --check
+# Tail logs with filter pattern
+./scripts/tail_logs.sh <log-group-name> "OutOfMemoryError" 1h
 ```
 
-**Features:**
-- Automatically detects architecture
-- Downloads and installs correct binary for your platform
-- Version tracking for Renovate (see script headers)
-- Supports Linux (x86_64, aarch64)
-- No root access required (installs to `~/.local/bin` if `/usr/local/bin` is not writable)
+**Time formats:** `1h`, `30m`, `2d`, `5s`
 
-### Log Time Range Calculator
+---
 
+### Workflow 5: Custom Error Analysis
+
+**User Request:** "Find all authentication failures in the last 6 hours"
+
+**Execution Sequence:**
 ```bash
-# Calculate epoch milliseconds for common time ranges
-scripts/time_range.sh "1 hour ago"
-scripts/time_range.sh "2024-01-15 10:00:00" "2024-01-15 11:00:00"
+# Step 1: Run custom Insights query
+./scripts/run_insights_query.sh <log-group-name> 6 \
+  'fields @timestamp, @message | filter @message like /(?i)(auth|authentication)/ and @message like /(?i)(fail|denied)/ | sort @timestamp desc | limit 100'
 ```
 
-### Multi-Group Search
-
+**Alternative using template query:**
 ```bash
-# Search across multiple log groups for a pattern
-scripts/multi_group_search.sh "ERROR" "/aws/lambda/*"
+# Step 1: Load query from template (if you have one defined)
+QUERY=$(jq -r '.custom_queries.auth_failures' scripts/insights_queries.json)
+
+# Step 2: Run the query
+./scripts/run_insights_query.sh <log-group-name> 6 "$QUERY"
 ```
 
-## Time Handling
+---
 
-**Important:** Different AWS Logs commands use different time formats:
+### Workflow 6: Analyze Performance Issues
 
-- `filter-log-events`: Epoch milliseconds (`1234567890000`)
-- `start-query`: Epoch seconds (`1234567890`)
-- `tail --since`: Human-readable (`1h`, `30m`, `2d`)
+**User Request:** "Find slow database queries in the last 24 hours"
 
-**Convert to epoch milliseconds:**
+**Execution Sequence:**
 ```bash
-# Current time
-date +%s000
+# Step 1: Use performance template query
+QUERY=$(jq -r '.performance_analysis.slow_requests' scripts/insights_queries.json)
 
-# Specific time
-date -d "2024-01-15 10:00:00" +%s000
-
-# Relative time (1 hour ago)
-date -d "1 hour ago" +%s000
+# Step 2: Run the query
+./scripts/run_insights_query.sh <log-group-name> 24 "$QUERY"
 ```
 
-**Convert from epoch milliseconds to human-readable:**
+**For RDS slow query logs:**
 ```bash
-echo "1705315200000" | awk '{print strftime("%Y-%m-%d %H:%M:%S", $1/1000)}'
+# Custom query for RDS slow query format
+./scripts/run_insights_query.sh /aws/rds/instance/mydb/slowquery 24 \
+  'fields @timestamp, query_time, lock_time, rows_examined, @message | parse @message /Query_time: (?<qt>[0-9.]+)\s+Lock_time: (?<lt>[0-9.]+).*\n(?<query>.*)/ | filter qt > 1.0 | sort qt desc | limit 20'
 ```
 
-## Output Formatting
+---
 
-### Pretty-print log events with jq
+### Workflow 7: Investigate Recent Activity
 
+**User Request:** "What's happening in my application right now?"
+
+**Execution Sequence:**
 ```bash
-# Format with timestamp, stream, and message
-aws logs filter-log-events \
-  --log-group-name <log-group> \
-  --filter-pattern "ERROR" \
-  | jq -r '.events[] | "\(.timestamp | tonumber / 1000 | strftime("%Y-%m-%d %H:%M:%S")) [\(.logStreamName)] \(.message)"'
+# Step 1: List recent log streams to see activity
+./scripts/list_log_streams.sh <log-group-name> 10
 
-# Extract JSON log fields
-aws logs filter-log-events \
-  --log-group-name <log-group> \
-  --filter-pattern "ERROR" \
-  | jq -r '.events[].message | fromjson | "\(.timestamp) [\(.level)] \(.message)"'
+# Step 2: Tail recent logs
+./scripts/tail_logs.sh <log-group-name> "" 10m
 
-# Count events by log stream
-aws logs filter-log-events \
-  --log-group-name <log-group> \
-  --filter-pattern "ERROR" \
-  | jq -r '.events | group_by(.logStreamName) | map({stream: .[0].logStreamName, count: length}) | .[]'
+# Step 3: If errors are seen, analyze them
+./scripts/analyze_errors.sh <log-group-name> 1
 ```
+
+---
+
+### Workflow 8: Compare Error Rates
+
+**User Request:** "Has the error rate increased in the last hour?"
+
+**Execution Sequence:**
+```bash
+# Step 1: Get errors from last hour
+./scripts/analyze_errors.sh <log-group-name> 1
+
+# Step 2: Get errors from previous hour for comparison
+./scripts/run_insights_query.sh <log-group-name> 2 \
+  'fields @timestamp | filter @message like /(?i)(error|fail|exception|critical)/ | stats count() as error_count by bin(1h)'
+```
+
+---
 
 ## Best Practices
 
-**Start broad, then narrow:**
-1. List log groups to find the right one
-2. Check recent log streams to understand activity
-3. Use `filter-log-events` for simple searches across streams
-4. Use Insights for complex aggregations and analysis
+### 1. Always Use Case-Insensitive Patterns
 
-**Time range considerations:**
-- Narrow time ranges reduce query cost and improve performance
-- Start with recent time ranges (last hour, last 6 hours)
-- Expand if needed
+**Logs may contain "error", "Error", or "ERROR"** - always use case-insensitive regex in CloudWatch Logs Insights queries:
+- ✅ Use: `/(?i)error/` in Insights queries
+- ❌ Avoid: `"ERROR"` filter patterns (case-sensitive)
 
-**Filter patterns vs Insights:**
-- Use filter patterns for simple text matching
-- Use Insights for aggregations, parsing, and complex analysis
-- Insights has a cost per GB scanned
+### 2. Start with analyze_errors.sh
 
-**Pagination:**
-- `filter-log-events` returns max 10,000 events
-- Use `--next-token` for pagination
-- Or use time-based chunking for large searches
+**For most error investigations**, use `analyze_errors.sh` first:
+- Provides complete overview in one command
+- Uses case-insensitive matching
+- Excludes known noise patterns
+- Shows time distribution
 
-**Performance tips:**
-- Specify log streams when known (faster than searching all streams)
-- Use specific filter patterns (reduces data scanned)
-- Limit results with `--max-items` or `--limit`
+### 3. Use Template Queries
 
-**Common gotchas:**
-- Timestamps are in milliseconds for filter-log-events, seconds for start-query
-- Log stream names must match exactly (case-sensitive)
-- Filter patterns are case-sensitive by default
-- Insights queries have a max execution time of 15 minutes
+**Leverage `scripts/insights_queries.json`** for common analysis patterns:
+- Pre-tested queries for common scenarios
+- Easy to customize
+- Consistent results
+
+### 4. Filter Out Noise
+
+**Noise patterns are defined in `scripts/noise-patterns.txt`:**
+- GitLab Runner: `file already closed`
+- AWS SDK throttling: `SlowDown`, `ThrottlingException`, `TooManyRequestsException`
+- Rate limiting: `RequestLimitExceeded`, `Throttled`, `RequestThrottled`
+- Provisioning: `ProvisionedThroughputExceededException`
+
+**Usage:**
+```bash
+# Enable noise filtering (uses patterns from noise-patterns.txt)
+./scripts/analyze_errors.sh <log-group> 24 --exclude-noise
+
+# View all noise patterns
+cat scripts/noise-patterns.txt
+
+# Add custom patterns (edit the file)
+echo "MyCustomNoisePattern" >> scripts/noise-patterns.txt
+```
+
+**Note:** Patterns are applied as case-insensitive regex patterns in CloudWatch Logs Insights queries.
+
+### 5. Narrow Time Ranges for Performance
+
+**Time range guidelines:**
+- Initial investigation: 1-6 hours
+- Trend analysis: 24 hours
+- Historical analysis: 7 days maximum
+
+**Narrower time ranges:**
+- Reduce CloudWatch Logs Insights costs
+- Improve query performance
+- Faster results
+
+### 6. Leverage Pattern Grouping
+
+**Error messages often differ only in timestamps, IPs, or IDs:**
+- "Error at 2026-02-06 15:30:45" vs "Error at 2026-02-06 16:45:12"
+- "Connection failed to 192.168.1.100" vs "Connection failed to 192.168.1.200"
+
+**Pattern normalization groups similar errors automatically:**
+```bash
+# The output includes both individual errors and pattern-grouped errors
+./scripts/analyze_errors.sh <log-group> 24
+
+# Query pattern-grouped errors from saved state
+./scripts/view_state.sh analyze_errors | jq '.top_errors_by_pattern'
+```
+
+**Pattern output structure:**
+```json
+{
+  "pattern": "Error at <TIMESTAMP>",
+  "total_count": 450,
+  "occurrences": 12,
+  "examples": [
+    {"message": "Error at 2026-02-06 15:30:45", "count": 120},
+    {"message": "Error at 2026-02-06 16:45:12", "count": 95}
+  ]
+}
+```
+
+**Benefits:**
+- See the "true" error count (not inflated by timestamp variations)
+- Identify systemic issues vs one-time errors
+- Reduce noise from UUID/IP variations
+
+### 7. Use Tracing for Distributed Systems
+
+**For microservices/distributed architectures:**
+- Use `trace_request.sh` to follow requests across services
+- Ensure request IDs are logged consistently
+- Search across all related log groups with a common prefix
+
+---
+
+## Troubleshooting Guide
+
+### Problem: No Errors Found
+
+**Cause:** Case-sensitive filter patterns don't match logs
+
+**Solution:**
+```bash
+# ✅ Use Insights-based scripts (case-insensitive)
+./scripts/analyze_errors.sh <log-group-name> 24
+./scripts/find_recent_errors.sh <log-group-name> 1
+```
+
+---
+
+### Problem: Too Many Results
+
+**Cause:** Broad search across large time range
+
+**Solution:**
+```bash
+# Step 1: Narrow time range
+./scripts/analyze_errors.sh <log-group-name> 1  # Last hour instead of 24
+
+# Step 2: Filter by specific pattern
+./scripts/run_insights_query.sh <log-group-name> 1 \
+  'fields @timestamp, @message | filter @message like /(?i)OutOfMemory/ | limit 50'
+```
+
+---
+
+### Problem: Query Timeout
+
+**Cause:** Query too complex or time range too large
+
+**Solution:**
+```bash
+# Step 1: Reduce time range
+./scripts/analyze_errors.sh <log-group-name> 1  # Instead of 24
+
+# Step 2: Simplify query (remove complex parsing)
+
+# Step 3: Add more specific filters early in the query
+./scripts/run_insights_query.sh <log-group-name> 1 \
+  'fields @timestamp, @message | filter @message like /(?i)specific_error/ | stats count()'
+```
+
+---
+
+### Problem: Log Group Not Found
+
+**Cause:** Typo or wrong region
+
+**Solution:**
+```bash
+# Step 1: List all log groups to verify name
+./scripts/list_log_groups.sh
+
+# Step 2: Search with prefix
+./scripts/list_log_groups.sh /aws/application
+
+# Step 3: Verify AWS region is correct (check AWS CLI config)
+```
+
+---
 
 ## Integration with Other Skills
 
-**kubernetes skill:**
-- Get pod names from k8s → search CloudWatch log streams for those pods
-- Match k8s events with application logs
+### With Kubernetes Skill
 
-**gitlab skill:**
-- Get commit SHA → search logs for deployment events with that SHA
-- Correlate CI/CD pipeline failures with application errors
+**Workflow: Correlate K8s pod events with application logs**
+
+```bash
+# Step 1: Get pod name from kubernetes skill
+# (kubernetes skill command)
+
+# Step 2: Search CloudWatch logs for that pod
+./scripts/trace_request.sh <pod-name> /aws/application 24
+```
+
+### With GitLab Skill
+
+**Workflow: Investigate deployment-related errors**
+
+```bash
+# Step 1: Get commit SHA from gitlab skill
+# (gitlab skill command)
+
+# Step 2: Search logs for that deployment
+./scripts/trace_request.sh <commit-sha> /aws/application 24
+
+# Step 3: Analyze errors during deployment window
+./scripts/analyze_errors.sh /aws/application/myapp 1
+```
+
+---
 
 ## Common Log Group Patterns
 
 **AWS Services:**
 ```
-/aws/lambda/<function-name>           # Lambda functions
-/aws/rds/instance/<instance-id>/*     # RDS instances
-/aws/ecs/containerinsights/<cluster>  # ECS container insights
-/aws/eks/<cluster>/cluster            # EKS control plane
-/aws/apigateway/<api-id>/<stage>      # API Gateway
+/aws/lambda/<function-name>
+/aws/rds/instance/<instance-id>/*
+/aws/ecs/containerinsights/<cluster>
+/aws/eks/<cluster>/cluster
+/aws/apigateway/<api-id>/<stage>
 ```
 
 **Application Logs:**
 ```
-/aws/application/<app-name>           # Custom application
-/var/log/messages                     # System logs
-/aws/containerinsights/<cluster>/*    # Container logs
+/aws/application/<app-name>
+/var/log/messages
+/aws/containerinsights/<cluster>/*
 ```
 
-## Error Handling
+---
 
-**Log group not found:**
-- Verify log group name (case-sensitive)
-- Check AWS region (use `--region` flag)
-- Verify IAM permissions
+## Quick Reference
 
-**No events found:**
-- Verify time range (check time zone)
-- Check filter pattern syntax
-- Ensure log streams exist in that time range
+### Most Common Commands
 
-**Query timeout:**
-- Reduce time range
-- Simplify Insights query
-- Add more specific filters
+**All commands output JSON by default. Add `--human` for human-readable format.**
 
-**Access denied:**
-- Verify IAM permissions: `logs:FilterLogEvents`, `logs:DescribeLogGroups`, etc.
-- Check resource-based policies on log groups
+```bash
+# Analyze errors (JSON output) - RECOMMENDED
+OUTPUT=$(./scripts/analyze_errors.sh <log-group> 24)
+echo "$OUTPUT" | jq '.total_errors'
+
+# Analyze errors (human-readable)
+./scripts/analyze_errors.sh <log-group> 24 --human
+
+# Analyze errors with noise filtering and comparison
+./scripts/analyze_errors.sh <log-group> 24 --exclude-noise --compare-previous
+
+# Find recent errors
+./scripts/find_recent_errors.sh <log-group> 1
+
+# Trace a request
+./scripts/trace_request.sh <request-id> <log-group-prefix> 24
+
+# Monitor in real-time
+./scripts/tail_logs.sh <log-group>
+
+# List log groups
+./scripts/list_log_groups.sh
+
+# Custom query
+./scripts/run_insights_query.sh <log-group> 24 '<insights-query>'
+
+# Parse JSON output
+./scripts/analyze_errors.sh <log-group> 24 | jq '.total_errors'
+./scripts/list_log_groups.sh | jq '.log_groups[].name'
+```
+
+### Time Formats
+
+**For most scripts (hours):**
+- `1` = last 1 hour
+- `24` = last 24 hours
+- `168` = last 7 days
+
+**For tail_logs.sh (relative time):**
+- `1h` = last hour
+- `30m` = last 30 minutes
+- `2d` = last 2 days
+
+---
 
 ## Dependencies
 
 **Required:**
-- `aws` - AWS CLI v2 (recommended) or v1
-  - Use `claudio-plugin/tools/aws-cli/install.sh` to automatically install if missing
-  - Version is tracked in the script for Renovate updates
+- `aws` CLI v2 (recommended) or v1
+  - Install: `../../../tools/aws-cli/install.sh`
+  - Check: `../../../tools/aws-cli/install.sh --check`
 
-**Optional:**
-- `jq` - JSON processor for parsing and formatting outputs
-  - Use `claudio-plugin/tools/jq/install.sh` to automatically install if missing
-  - Version is tracked in the script for Renovate updates
-- `date` - GNU date for time calculations (typically pre-installed on Linux)
+**Optional (recommended):**
+- `jq` - JSON processor for parsing outputs
+  - Install: `../../../tools/jq/install.sh`
+  - Check: `../../../tools/jq/install.sh --check`
 
-**Installation:**
-Individual installation scripts are available in the `claudio-plugin/tools/` directory:
-- `tools/aws-cli/install.sh` - AWS CLI installation
-- `tools/jq/install.sh` - jq installation
-
-Each script:
-- Detects your platform (Linux/macOS, x86_64/ARM64)
-- Downloads and installs the correct binary for your platform
-- Tracks version for automatic updates via Renovate
-- No root access required (installs to `~/.local/bin` if `/usr/local/bin` is not writable)
+All installation scripts:
+- Auto-detect architecture (Linux x86_64, ARM64)
+- No root access required
+- Idempotent (safe to run multiple times)
+- Version tracking for Renovate updates
