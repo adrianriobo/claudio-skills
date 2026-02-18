@@ -1,7 +1,7 @@
 ---
 name: aws-log-analyzer
 description: Troubleshoot and analyze logs from AWS CloudWatch Logs. This skill should be used when the user asks to investigate logs, troubleshoot application issues, query log groups, analyze error patterns, or perform log analysis for machines writing to AWS CloudWatch. Uses the AWS CLI for CloudWatch Logs operations.
-allowed-tools: Bash(aws logs:*),Bash(*/aws-log-analyzer/scripts/*.sh:*),Bash(*/tools/*/install.sh:*)
+allowed-tools: Bash(aws logs describe-log-groups:*),Bash(aws logs describe-log-streams:*),Bash(aws logs filter-log-events:*),Bash(aws logs start-query:*),Bash(aws logs get-query-results:*),Bash(aws logs tail:*),Bash(*/aws-log-analyzer/scripts/*.sh:*),Bash(*/tools/*/install.sh:*)
 ---
 
 # AWS Log Analyzer
@@ -178,6 +178,8 @@ Top Errors by Frequency:
 **⚠️ IMPORTANT: State management is for advanced use cases only**
 
 The state management system (`~/.aws-log-analyzer/state/`) is available for very large datasets or multi-step workflows, but is **NOT recommended for typical error analysis**.
+
+**Shared Library:** This skill uses `claudio-plugin/tools/memory/scripts/state.sh` - a shared state management library used across multiple skills.
 
 **Why direct JSON output is better:**
 - ✅ Simpler - no session IDs or file paths to manage
@@ -508,6 +510,41 @@ QUERY=$(jq -r '.performance_analysis.slow_requests' scripts/insights_queries.jso
 ```
 
 ---
+
+## Performance Optimization
+
+**When combining this skill with other skills (especially gitlab-job-analyzer):**
+
+See the complete optimization guide in the main CLAUDE.md documentation under "Performance Optimization for Cross-Skill Analysis".
+
+**Key optimizations:**
+1. **Parallel execution** - Run GitLab + AWS analysis simultaneously in one message
+2. **Parse JSON once** - Capture output, parse multiple times with jq (don't re-run scripts)
+3. **Smart targeting** - Analyze only log groups for failing runners/components identified in GitLab analysis
+4. **Direct JSON output** - For typical analyses (10K+ errors), direct JSON is more efficient than state management
+
+**Example - Optimized cross-skill analysis:**
+```bash
+# SINGLE MESSAGE - Parallel execution:
+# Tool 1: AWS log analysis for component 1
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component1 24
+
+# Tool 2: AWS log analysis for component 2 (runs in parallel)
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component2 24
+
+# Tool 3: GitLab analysis (runs in parallel)
+./gitlab-job-analyzer/scripts/analyze_recent_jobs.sh owner/repo --hours 24
+
+# Then parse AWS output multiple ways without re-running:
+echo "$AWS_OUTPUT" | jq '.total_errors'
+echo "$AWS_OUTPUT" | jq '.by_severity'
+echo "$AWS_OUTPUT" | jq '.top_errors[:5]'
+echo "$AWS_OUTPUT" | jq '.hourly_distribution'
+```
+
+**Expected performance:**
+- Optimized: 3-4 minutes, $0.75-0.85
+- Non-optimized: 10+ minutes, $1.06+
 
 ## Best Practices
 

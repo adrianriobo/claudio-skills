@@ -1,11 +1,11 @@
 #!/bin/bash
-# View stored state from previous aws-log-analyzer script executions
+# View stored state from previous gitlab-job-analyzer script executions
 # Usage: ./view_state.sh [state_id|operation_name]
 
 set -euo pipefail
 
 # Set state directory for this skill
-SKILL_STATE_DIR="${AWS_LOG_ANALYZER_STATE_DIR:-$HOME/.aws-log-analyzer/state}"
+SKILL_STATE_DIR="${GITLAB_JOB_ANALYZER_STATE_DIR:-$HOME/.gitlab-job-analyzer/state}"
 
 # Source shared state library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

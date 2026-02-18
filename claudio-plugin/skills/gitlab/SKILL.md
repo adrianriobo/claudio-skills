@@ -1,7 +1,7 @@
 ---
 name: gitlab
 description: Interact with GitLab repositories using the glab CLI tool. This skill should be used when the user provides GitLab URLs, asks to resolve git tags to commit SHAs, retrieve commit details, manage merge requests, issues, pipelines, or perform other GitLab repository operations. Uses the official GitLab CLI (glab).
-allowed-tools: Bash(glab api --method GET:*)
+allowed-tools: Bash(glab mr:*),Bash(glab issue:*),Bash(glab ci:*),Bash(glab job:*),Bash(glab release:*),Bash(glab repo:*),Bash(glab label:*),Bash(glab variable:*),Bash(glab schedule:*),Bash(glab snippet:*),Bash(glab api --method GET:*),Bash(*/tools/*/install.sh:*)
 ---
 
 # GitLab
@@ -14,6 +14,21 @@ Interact with GitLab repositories using the `glab` CLI tool - the official GitLa
 - `glab` command is available
 - User is already authenticated
 - Works with gitlab.com, GitLab Self-Managed, and GitLab Dedicated
+
+**Installation:**
+Use the centralized tool installation scripts to install dependencies:
+
+```bash
+# glab CLI (required)
+../../../tools/glab/install.sh          # Check and install glab
+../../../tools/glab/install.sh --check  # Check only, don't install
+
+# jq (optional, recommended)
+../../../tools/jq/install.sh            # Check and install jq
+../../../tools/jq/install.sh --check    # Check only, don't install
+```
+
+The tool scripts are idempotent - safe to run multiple times. They will only install if the tool is not present or outdated.
 
 **Philosophy:**
 Always use glab's built-in commands first. Only fall back to `glab api` for operations not covered by built-in commands.
@@ -190,6 +205,21 @@ glab api --method GET projects/owner%2Frepo/repository/tags --hostname gitlab.ex
 
 **Required:**
 - `glab` - GitLab CLI tool
+  - Use `claudio-plugin/tools/glab/install.sh` to automatically install if missing
+  - Version is tracked in the script for Renovate updates
 
 **Optional:**
 - `jq` - JSON processor for parsing API responses
+  - Use `claudio-plugin/tools/jq/install.sh` to automatically install if missing
+  - Version is tracked in the script for Renovate updates
+
+**Installation:**
+Individual installation scripts are available in the `claudio-plugin/tools/` directory:
+- `tools/glab/install.sh` - glab CLI installation
+- `tools/jq/install.sh` - jq installation
+
+Each script:
+- Detects your platform (Linux x86_64/ARM64)
+- Downloads and installs the correct binary for your platform
+- Tracks version for automatic updates via Renovate
+- No root access required (installs to `~/.local/bin` if `/usr/local/bin` is not writable)

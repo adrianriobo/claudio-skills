@@ -2,13 +2,14 @@
 
 ## Overview
 
-This repository contains **Claudio Skills Plugin** - a Claude Code plugin that extends Claude with specialized skills for DevOps and cloud-native development workflows. The plugin provides four powerful skills designed to streamline interactions with GitLab, Kubernetes, Konflux, and AWS CloudWatch Logs.
+This repository contains **Claudio Skills Plugin** - a Claude Code plugin that extends Claude with specialized skills for DevOps and cloud-native development workflows. The plugin provides five skills designed to streamline interactions with GitLab, Kubernetes, Konflux, and AWS CloudWatch Logs.
 
 ## What is this for?
 
 This plugin enables Claude Code to:
 
 - **Interact with GitLab repositories** using the official `glab` CLI
+- **Analyze GitLab CI/CD job failures** using structured scripts for pipeline debugging
 - **Manage Kubernetes clusters** using `kubectl` operations
 - **Orchestrate Konflux releases** for production deployments
 - **Troubleshoot and analyze AWS CloudWatch Logs** for application debugging and monitoring
@@ -31,6 +32,15 @@ claudio-plugin/
 └── skills/
     ├── gitlab/
     │   └── SKILL.md             # GitLab operations skill
+    ├── gitlab-job-analyzer/
+    │   ├── SKILL.md             # GitLab CI/CD job analysis skill
+    │   └── scripts/
+    │       ├── analyze_recent_jobs.sh   # Recent job summary
+    │       ├── analyze_by_runner.sh     # Runner-specific analysis
+    │       ├── analyze_pipeline.sh      # Single pipeline deep dive
+    │       ├── compare_job_logs.sh      # Compare job runs
+    │       ├── analyze_dependencies.sh  # Dependency graph analysis
+    │       └── extract_errors.sh        # Error categorization
     ├── kubernetes/
     │   └── SKILL.md             # Kubernetes management skill
     ├── konflux/
@@ -40,8 +50,11 @@ claudio-plugin/
     └── aws-log-analyzer/
         ├── SKILL.md             # AWS CloudWatch Logs troubleshooting skill
         └── scripts/
-            ├── time_range.sh    # Time range calculator
-            └── multi_group_search.sh  # Multi-group search tool
+            ├── analyze_errors.sh        # Error analysis
+            ├── find_recent_errors.sh    # Recent error search
+            ├── run_insights_query.sh    # Custom Insights queries
+            ├── trace_request.sh         # Cross-service request tracing
+            └── tail_logs.sh             # Real-time log monitoring
 ```
 
 ## Tools Management
@@ -242,7 +255,25 @@ When a new version is released, Renovate automatically creates a PR to update th
 - Supports GitLab.com, Self-Managed, and Dedicated instances
 - Safe read-only operations by default
 
-### 2. Kubernetes Skill
+### 2. GitLab Job Analyzer Skill
+
+**Purpose:** Analyze GitLab CI/CD job failures, parse logs, and identify error patterns.
+
+**Use cases:**
+- Summarize job activity across pipelines in a time range
+- Analyze failures by runner type
+- Deep-dive into specific pipeline failures
+- Compare successful vs failed job runs
+- Extract and categorize error patterns from job logs
+
+**Key features:**
+- All operations through structured scripts (no direct CLI access)
+- JSON-first output for programmatic parsing
+- Time-based and runner-based analysis
+- Error pattern recognition and categorization
+- Integrates with the gitlab skill for underlying `glab` operations
+
+### 3. Kubernetes Skill
 
 **Purpose:** Interact with Kubernetes clusters using `kubectl` commands.
 
@@ -258,7 +289,7 @@ When a new version is released, Renovate automatically creates a PR to update th
 - JSON output for programmatic processing
 - Works with pre-configured kubectl contexts
 
-### 3. Konflux Skill
+### 4. Konflux Skill
 
 **Purpose:** Work with Konflux - a build and release platform based on OpenShift and Tekton.
 
@@ -276,7 +307,7 @@ When a new version is released, Renovate automatically creates a PR to update th
 - Includes Python script for deterministic YAML generation
 - Integrates with GitLab skill for tag resolution and Kubernetes skill for resource querying
 
-### 4. AWS Log Analyzer Skill
+### 5. AWS Log Analyzer Skill
 
 **Purpose:** Troubleshoot and analyze logs from AWS CloudWatch Logs for debugging and monitoring.
 
@@ -301,6 +332,11 @@ Each skill has its own dependencies:
 
 **GitLab Skill:**
 - `glab` - GitLab CLI tool
+- User already authenticated
+- Optional: `jq` for JSON parsing
+
+**GitLab Job Analyzer Skill:**
+- `glab` - GitLab CLI tool (used internally by scripts)
 - User already authenticated
 - Optional: `jq` for JSON parsing
 
@@ -402,6 +438,270 @@ When a user asks to investigate application errors:
      --log-group-name /aws/application/myapp \
      --query-string 'fields @timestamp, @message | filter @message like /ERROR/ | stats count() by @message'
    ```
+
+## Performance Optimization for Cross-Skill Analysis
+
+When combining multiple skills (especially `gitlab-job-analyzer` + `aws-log-analyzer`), follow these optimization guidelines to minimize execution time and cost.
+
+### Key Principles
+
+**Think in parallel, execute in bulk, analyze once.**
+
+1. **Maximum Parallelization** - Call all independent tools in ONE message
+2. **Parse JSON Directly** - Use jq on outputs instead of multiple queries
+3. **Eliminate Redundant Calls** - Extract data from existing results
+4. **Smart Targeting** - Analyze first, then target specific resources
+5. **Keep Using Skills** - Skills delegate to cheaper Haiku models
+
+### Optimization Patterns
+
+#### Pattern 1: Parallel Data Collection
+
+**❌ Sequential (Slow - 10+ minutes):**
+```bash
+# Step 1: Get GitLab data
+./gitlab-job-analyzer/scripts/analyze_recent_jobs.sh owner/repo --hours 24
+
+# Wait for results...
+
+# Step 2: Get AWS data
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component1 24
+
+# Wait for results...
+
+# Step 3: Get more AWS data
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component2 24
+```
+
+**✅ Parallel (Fast - 3-4 minutes):**
+```bash
+# Execute ALL independent calls in ONE message with multiple tool invocations:
+# Tool 1: GitLab analysis
+./gitlab-job-analyzer/scripts/analyze_recent_jobs.sh owner/repo --hours 24
+
+# Tool 2: AWS component 1 analysis (independent of GitLab)
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component1 24
+
+# Tool 3: AWS component 2 analysis (independent of GitLab)
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component2 24
+```
+
+**When to use parallel execution:**
+- Data sources are independent (GitLab + AWS, multiple log groups, multiple repos)
+- No data dependency between calls
+- You need comprehensive analysis across multiple systems
+
+**Implementation:**
+- Make multiple Bash tool calls in a single message
+- Each call executes independently and concurrently
+- Results arrive together, reducing total wait time
+
+#### Pattern 2: JSON Parsing Without Redundant Calls
+
+**❌ Multiple calls for different data (Wasteful):**
+```bash
+# Call 1: Get total errors
+./scripts/analyze_recent_jobs.sh owner/repo --hours 24 | jq '.job_statistics.failed'
+
+# Call 2: Get runner breakdown (same data, called again!)
+./scripts/analyze_recent_jobs.sh owner/repo --hours 24 | jq '.by_runner_tag'
+
+# Call 3: Get stage breakdown (same data, called again!)
+./scripts/analyze_recent_jobs.sh owner/repo --hours 24 | jq '.by_stage'
+```
+
+**✅ Single call, multiple parses (Efficient):**
+```bash
+# Step 1: Capture output ONCE
+OUTPUT=$(./scripts/analyze_recent_jobs.sh owner/repo --hours 24)
+
+# Step 2: Parse different fields from the same data
+echo "$OUTPUT" | jq '.job_statistics.failed'
+echo "$OUTPUT" | jq '.by_runner_tag'
+echo "$OUTPUT" | jq '.by_stage'
+echo "$OUTPUT" | jq '.failed_jobs[] | select(.runner_tag | startswith("aipcc-"))'
+```
+
+**Benefits:**
+- 70% reduction in GitLab API calls
+- Faster execution (no network round-trips)
+- Lower cost (fewer tool invocations)
+
+#### Pattern 3: Eliminate Redundant Scripts
+
+**❌ Running overlapping scripts:**
+```bash
+# analyze_recent_jobs.sh already includes runner breakdown
+./scripts/analyze_recent_jobs.sh owner/repo --hours 24
+
+# analyze_by_runner.sh duplicates the same data
+./scripts/analyze_by_runner.sh owner/repo --hours 24  # REDUNDANT
+```
+
+**✅ Extract from comprehensive output:**
+```bash
+# Single call gets all data
+OUTPUT=$(./scripts/analyze_recent_jobs.sh owner/repo --hours 24)
+
+# Extract runner-specific analysis with jq
+echo "$OUTPUT" | jq '.by_runner_tag[] | {tag, total, failed, success_rate}'
+echo "$OUTPUT" | jq '.failed_jobs[] | group_by(.runner_tag) | map({runner: .[0].runner_tag, count: length})'
+```
+
+**When analyze_by_runner.sh IS useful:**
+- Need detailed runner comparison metrics not in analyze_recent_jobs.sh
+- Need `--compare` flag for specific runner comparisons
+- Need runner-specific duration statistics
+
+**Rule of thumb:**
+- If data exists in first script output → use jq to extract it
+- If data requires different analysis logic → use specialized script
+
+#### Pattern 4: Smart Targeting
+
+**❌ Analyze everything upfront:**
+```bash
+# Analyze ALL 9 runner types without knowing which failed
+./scripts/analyze_errors.sh /aws/runner/aipcc-small-x86_64 24
+./scripts/analyze_errors.sh /aws/runner/aipcc-small-aarch64 24
+./scripts/analyze_errors.sh /aws/runner/aipcc-medium-x86_64 24
+# ... 6 more runner types
+```
+
+**✅ Identify problems first, then target:**
+```bash
+# Step 1: Get GitLab analysis (identify problematic runners)
+GITLAB_OUTPUT=$(./scripts/analyze_recent_jobs.sh owner/repo --hours 24)
+
+# Step 2: Extract runners with high failure rates
+PROBLEM_RUNNERS=$(echo "$GITLAB_OUTPUT" | jq -r '.by_runner_tag[] | select(.failed > 5) | .tag')
+
+# Step 3: Analyze AWS logs ONLY for problematic runners
+# Make parallel calls for each problem runner
+for runner in $PROBLEM_RUNNERS; do
+  ./scripts/analyze_errors.sh /aws/runner/$runner 24
+done
+```
+
+**Benefits:**
+- Analyze only relevant resources (2-3 runners instead of 9)
+- 60% reduction in AWS CloudWatch Logs Insights queries
+- Faster results and lower cost
+
+#### Pattern 5: Efficient Skill Usage
+
+**✅ Keep using skills (they use cheaper Haiku models):**
+```bash
+# Preferred: Use skills - they delegate to Haiku ($0.05 per task)
+# Skills handle tool installation, error handling, and best practices
+./gitlab-job-analyzer/scripts/analyze_recent_jobs.sh owner/repo --hours 24
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/myapp 24
+```
+
+**❌ Don't bypass skills to call tools directly:**
+```bash
+# Anti-pattern: Direct tool calls bypass skill optimizations
+glab api ...  # Missing skill logic, uses Sonnet context
+aws logs start-query ...  # No error handling, uses Sonnet context
+```
+
+**Why skills are better:**
+- Skills invoke specialized Haiku agents for heavy work
+- Sonnet usage: $15/M output tokens
+- Haiku usage: $1.25/M output tokens
+- Skills = 12x cheaper for analysis tasks
+
+### Complete Optimization Workflow
+
+**Scenario:** "Analyze CI/CD failures and correlate with application logs for the last 24 hours"
+
+**✅ Optimized Execution (3-4 minutes, ~$0.75-0.85):**
+
+```bash
+# SINGLE MESSAGE - All parallel tool calls:
+
+# Tool 1: GitLab comprehensive analysis (identifies problem areas)
+./gitlab-job-analyzer/scripts/analyze_recent_jobs.sh owner/repo --hours 24
+
+# Tool 2: AWS log analysis for component 1 (independent)
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component1 24
+
+# Tool 3: AWS log analysis for component 2 (independent)
+./aws-log-analyzer/scripts/analyze_errors.sh /aws/app/component2 24
+```
+
+**Then in subsequent analysis:**
+```bash
+# Parse GitLab results to identify problematic runners
+GITLAB_OUTPUT=$(cat previous_output.json)  # From previous call
+PROBLEM_RUNNERS=$(echo "$GITLAB_OUTPUT" | jq -r '.failed_jobs[] | .runner_tag' | sort | uniq)
+
+# Parse AWS results to find error correlation
+AWS_OUTPUT=$(cat aws_output.json)  # From previous call
+echo "$AWS_OUTPUT" | jq '.top_errors[] | select(.count > 10)'
+
+# Correlate: Match GitLab job failure times with AWS error spikes
+echo "$GITLAB_OUTPUT" | jq '.failed_jobs[] | {time: .created_at, job: .name}'
+echo "$AWS_OUTPUT" | jq '.hourly_distribution'
+```
+
+**❌ Non-Optimized Execution (10+ minutes, ~$1.06):**
+- Sequential calls (wait for each to finish)
+- Multiple calls to same script for different fields
+- Analyze all resources before identifying problems
+- Verbose explanations between each step
+
+### Optimization Checklist
+
+**Before starting analysis:**
+- [ ] Identify all independent data sources (GitLab, AWS, K8s, etc.)
+- [ ] Plan to fetch them in parallel (single message, multiple tools)
+- [ ] Know which jq filters you'll need for parsing
+- [ ] Target only necessary resources (not all runners/log groups)
+
+**During execution:**
+- [ ] Make ONE message with 4-6 parallel tool calls
+- [ ] Use Skills for analysis scripts (not direct Bash)
+- [ ] Capture full JSON outputs for later parsing
+- [ ] Skip redundant data fetching
+
+**After results:**
+- [ ] Parse JSON with jq for different views
+- [ ] Provide comprehensive analysis once
+- [ ] Be concise with explanations
+
+### Expected Performance
+
+**Optimized vs Non-Optimized:**
+
+| Metric | Non-Optimized | Optimized | Improvement |
+|--------|---------------|-----------|-------------|
+| **Time** | 10 minutes | 3-4 minutes | 60-70% faster |
+| **Cost** | $1.06 | $0.75-0.85 | 25-30% cheaper |
+| **Tool Calls** | 13+ calls | 4-5 calls | 65% fewer |
+| **Context Usage** | High (repeated data) | Low (single fetch) | 40% reduction |
+
+### Advanced Tips
+
+**1. Batch Context Operations**
+- Fewer conversation turns = less context repetition
+- Make decisions upfront, execute in bulk
+- Even cached tokens have cost
+
+**2. Skip Exploratory Calls**
+- Trust tool outputs on first try
+- No "let me check the structure" calls
+- Read skill documentation instead
+
+**3. Reduce Verbose Outputs**
+- Front-load all parallel calls
+- Explain comprehensively once at the end
+- Minimize intermediate commentary
+
+**4. Use State Management Wisely**
+- For typical analyses (10K errors, 200 jobs), direct JSON output is efficient
+- Only save state for 100K+ entries or multi-day workflows
+- State management adds complexity without benefit for normal datasets
 
 ## License
 

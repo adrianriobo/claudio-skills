@@ -1,50 +1,59 @@
 #!/bin/bash
-# CloudWatch Logs Insights query helpers
+# CloudWatch Logs Insights query helper functions
+# Provides polling-based query execution with progress feedback
+#
+# Usage:
+#   source "$SCRIPT_DIR/lib/query_helpers.sh"
+#   RESULT=$(wait_for_query "$QUERY_ID" "  Progress label")
 
-set -euo pipefail
-
-# Wait for query to complete with progress indicator
-# Usage: wait_for_query <query-id> [description]
+# wait_for_query - Poll CloudWatch Logs Insights query until completion
+#
+# Arguments:
+#   $1 - Query ID returned by aws logs start-query
+#   $2 - Progress label for status messages (sent to stderr)
+#
+# Returns:
+#   Full JSON result from aws logs get-query-results on stdout
+#
+# Exit codes:
+#   0 - Query completed successfully
+#   1 - Query failed, was cancelled, or timed out after max attempts
 wait_for_query() {
     local query_id="$1"
-    local description="${2:-Query}"
-    local status=""
-    local count=0
+    local label="${2:-  Waiting}"
+    local max_attempts=30
+    local sleep_interval=2
 
-    echo -n "$description: " >&2
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        local result
+        result=$(aws logs get-query-results --query-id "$query_id" 2>/dev/null) || {
+            echo "${label}: failed to get query results" >&2
+            return 1
+        }
 
-    while true; do
-        status=$(aws logs get-query-results --query-id "$query_id" --query 'status' --output text 2>/dev/null || echo "Failed")
+        local status
+        status=$(echo "$result" | jq -r '.status // "Unknown"')
 
         case "$status" in
-            "Complete")
-                echo " Done" >&2
-                break
+            Complete)
+                echo "$result"
+                return 0
                 ;;
-            "Failed"|"Cancelled")
-                echo " Failed" >&2
+            Failed|Cancelled)
+                echo "${label}: query ${status}" >&2
                 return 1
                 ;;
-            "Running"|"Scheduled")
+            Running|Scheduled)
                 echo -n "." >&2
-                sleep 2
-                count=$((count + 1))
-                # Timeout after 60 seconds (30 iterations * 2s)
-                if [ $count -gt 30 ]; then
-                    echo " Timeout" >&2
-                    return 1
-                fi
+                sleep "$sleep_interval"
                 ;;
             *)
-                # Unknown status, wait a bit more
-                sleep 1
+                echo "${label}: unknown status '${status}'" >&2
+                sleep "$sleep_interval"
                 ;;
         esac
     done
 
-    # Get the results
-    aws logs get-query-results --query-id "$query_id"
+    echo "${label}: timed out after $((max_attempts * sleep_interval)) seconds" >&2
+    return 1
 }
-
-# Export functions
-export -f wait_for_query

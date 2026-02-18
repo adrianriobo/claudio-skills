@@ -1,11 +1,28 @@
 #!/bin/bash
-# State management library for AWS Log Analyzer scripts
+# Generic state management library for Claudio skills
 # This allows scripts to save outputs and reference them later without re-sending data to the model
+#
+# Location: claudio-plugin/tools/memory/scripts/state.sh
+#
+# Usage:
+#   Before sourcing this library, set SKILL_STATE_DIR to your skill's state directory:
+#
+#   SKILL_STATE_DIR="${MY_SKILL_STATE_DIR:-$HOME/.my-skill/state}"
+#   source "$(dirname "${BASH_SOURCE[0]}")/../../../tools/memory/scripts/state.sh"
+#
+# This keeps each skill's state isolated while sharing the same management code.
 
 set -euo pipefail
 
+# Validate that SKILL_STATE_DIR is set
+if [[ -z "${SKILL_STATE_DIR:-}" ]]; then
+    echo "Error: SKILL_STATE_DIR must be set before sourcing state.sh" >&2
+    echo "Example: SKILL_STATE_DIR=\"\$HOME/.my-skill/state\"" >&2
+    exit 1
+fi
+
 # State directory - stores all script outputs
-STATE_DIR="${AWS_LOG_ANALYZER_STATE_DIR:-$HOME/.aws-log-analyzer/state}"
+STATE_DIR="$SKILL_STATE_DIR"
 STATE_METADATA="$STATE_DIR/metadata.json"
 
 # Initialize state directory

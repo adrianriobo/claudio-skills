@@ -1,7 +1,7 @@
 ---
 name: kubernetes
 description: Interact with Kubernetes clusters using kubectl. This skill should be used when the user asks to get, describe, or inspect Kubernetes resources like pods, deployments, services, or configmaps. Assumes kubectl is installed and context is already configured.
-allowed-tools: Bash(kubectl get:*)
+allowed-tools: Bash(kubectl get:*),Bash(kubectl describe:*),Bash(kubectl apply:*)
 ---
 
 # Kubernetes
