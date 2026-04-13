@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains **Claudio Skills Plugin** - a Claude Code plugin that extends Claude with specialized skills for DevOps and cloud-native development workflows. The plugin provides skills designed to streamline interactions with GitLab, Konflux, and AWS CloudWatch Logs.
+This repository contains **Claudio Skills Plugin** - a Claude Code plugin that extends Claude with specialized skills for DevOps and cloud-native development workflows. The plugin provides skills designed to streamline interactions with GitLab, Konflux, AWS CloudWatch Logs, Slack, and Jira.
 
 ## What is this for?
 
@@ -12,6 +12,8 @@ This plugin enables Claude Code to:
 - **Orchestrate Konflux production releases** with self-contained stage-to-production workflows
 - **Troubleshoot and analyze AWS CloudWatch Logs** for application debugging and monitoring
 - **Create and protect GitLab branches** for release workflows and branch management
+- **Interact with Slack workspaces** for message search, posting, and conversation management
+- **Manage Jira issues** with JQL search, create/update/link issues, and sprint tracking
 
 These skills allow you to leverage Claude as an intelligent assistant for complex DevOps tasks, from querying merge requests to deploying production releases and troubleshooting application issues across multiple components.
 
@@ -62,11 +64,19 @@ claudio-plugin/
     │       └── tail_logs.sh             # Real-time log monitoring
     └── gitlab-branch-manager/
         ├── SKILL.md             # GitLab branch creation and protection skill
-        └── scripts/
             └── create_and_protect_branch.sh  # Branch creation + protection
+    └── jira-utilities/
+        ├── SKILL.md             # Jira REST API utilities skill
+            └── jira/
+                ├── client.py            # Shared Jira REST client (Cloud + Data Center)
+                ├── get_issue.py         # Fetch single issue by key
+                ├── search_issues.py     # JQL search
+                ├── create_issue.py      # Create new issue
+                ├── update_issue.py      # Update issue fields
+                ├── link_issues.py       # Link two issues
+                └── get_sprint.py        # Fetch sprint info from a board
 ```
 
-## Tools Management
 
 The `claudio-plugin/tools/` directory contains centralized installation scripts for CLI tools used by skills. This system provides a consistent, maintainable way to manage tool dependencies across all skills.
 
@@ -326,13 +336,29 @@ When a new version is released, Renovate automatically creates a PR to update th
 - Create release branches from main or a specific tag/ref
 - Apply branch protection rules (push, merge, force push, unprotect restrictions)
 - Verify branch protection configuration
-
 **Key features:**
 - Smart repo resolution (short name, full path, or URL)
 - Extensible protection rules via parallel arrays + generic `--rule KEY=VALUE` flag
 - Idempotent protection checks (matching rules succeed, differing rules fail)
 - Dry-run mode for previewing actions
 - JSON and human-readable output
+
+### 5. Jira Utilities Skill
+
+**Purpose:** Manage Jira issues via the Jira REST API v3, supporting both Jira Cloud and Jira Data Center.
+
+**Use cases:**
+- Fetch a single issue by key
+- Search issues with JQL (Jira Query Language)
+- Create new issues with full field support (summary, description, type, priority, labels, assignee)
+- Link issues with typed relationships (blocks, duplicates, relates to)
+- Fetch sprint information from Jira Software boards
+
+**Key features:**
+- Supports Jira Cloud (Basic auth) and Data Center (Bearer/PAT) authentication
+- Python REST API integration — no unmaintained third-party CLI required
+- Standalone scripts usable independently or imported by other skills
+- Full test suite with mocked HTTP calls (no real Jira instance required)
 
 ## Prerequisites
 
@@ -341,7 +367,6 @@ Each skill has its own dependencies:
 **GitLab Branch Manager Skill:**
 - `glab` - GitLab CLI tool (installed via `tools/glab/install.sh`)
 - User already authenticated
-- `jq` for JSON parsing (installed via `tools/jq/install.sh`)
 - Dependencies are installed by the skill via `allowed-tools` before running scripts
 
 **GitLab Job Analyzer Skill:**
@@ -359,6 +384,13 @@ Each skill has its own dependencies:
 - `aws` CLI - AWS CLI v2 recommended
 - User already authenticated (IAM credentials, SSO, or instance profile)
 - Optional: `jq` for JSON parsing and output formatting
+
+**Jira Utilities Skill:**
+- `python3` + `requests` library (`pip3 install -r requirements.txt`)
+- `JIRA_BASE_URL` - Jira instance URL (e.g., `https://yourorg.atlassian.net`)
+- `JIRA_TOKEN` - API token (Cloud) or Personal Access Token (Data Center)
+- `JIRA_EMAIL` - User email (Cloud auth only)
+- `JIRA_AUTH_TYPE` - `cloud` or `datacenter` (default: `cloud`)
 
 ## Installation
 

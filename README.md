@@ -7,7 +7,7 @@ A Claude Code plugin that extends Claude with specialized skills for DevOps and 
 
 ## Overview
 
-Claudio Skills Plugin provides five production-ready skills designed to streamline interactions with GitLab CI/CD, Konflux, AWS CloudWatch Logs, Slack, and GitLab branch management. Each skill provides Claude Code with domain-specific capabilities, allowing you to leverage Claude as an intelligent assistant for complex DevOps tasks.
+Claudio Skills Plugin provides five production-ready skills designed to streamline interactions with GitLab CI/CD, Konflux, AWS CloudWatch Logs, Slack, GitLab branch management, and Jira. Each skill provides Claude Code with domain-specific capabilities, allowing you to leverage Claude as an intelligent assistant for complex DevOps tasks.
 
 ## Features
 
@@ -16,6 +16,7 @@ Claudio Skills Plugin provides five production-ready skills designed to streamli
 - **AWS Log Analysis** - Troubleshoot and analyze CloudWatch Logs with advanced querying
 - **Slack Utilities** - Search messages, post updates, and interact with Slack workspaces
 - **GitLab Branch Management** - Create and protect GitLab branches with configurable protection rules
+- **Jira Utilities** - Manage Jira issues with JQL search, create/update issues, link issues, and fetch sprint info
 
 ## Skills
 
@@ -101,8 +102,6 @@ Disclaimer, the first time you reuse those Tokens you will probably be signed of
 
 ### 5. GitLab Branch Manager Skill
 
-Create and protect GitLab branches for release workflows and branch management.
-
 **Use Cases:**
 - Create release branches from main or a specific tag/ref
 - Apply branch protection rules (push, merge, force push, unprotect restrictions)
@@ -116,8 +115,29 @@ Create and protect GitLab branches for release workflows and branch management.
 - JSON and human-readable output
 - Compatible with bash 3.2+ (macOS, RHEL, Ubuntu, Alpine)
 
-## Installation
+### 6. Jira Utilities Skill
 
+**Use Cases:**
+- Fetch a single issue by key
+- Search issues with JQL (Jira Query Language)
+- Create new issues with full field support
+- Update fields on existing issues
+- Link issues with typed relationships (blocks, duplicates, relates to)
+- Fetch sprint information from Jira Software boards
+
+**Key Features:**
+- Supports Jira Cloud (Basic auth) and Data Center (Bearer/PAT) authentication
+- Python REST API integration — no unmaintained third-party CLI required
+- Standalone scripts usable from other skills
+- Full test suite with mocked HTTP calls
+
+**Prerequisites:**
+- `JIRA_BASE_URL` - Jira instance URL (e.g., `https://yourorg.atlassian.net`)
+- `JIRA_TOKEN` - API token (Cloud) or Personal Access Token (Data Center)
+- `JIRA_EMAIL` - User email (Cloud auth only)
+- `JIRA_AUTH_TYPE` - `cloud` or `datacenter` (default: `cloud`)
+
+## Installation
 ### Prerequisites
 
 **Core Requirements:**
@@ -135,15 +155,14 @@ Each skill manages its own dependencies through installer scripts in `claudio-pl
 | AWS Log Analyzer | `aws` CLI v2, `jq` | Both |
 | Slack Utilities | `curl`, `jq`, `python3` + requests | `jq`, requests |
 | GitLab Branch Manager | `glab`, `jq` | `jq` only |
+| Jira Utilities | `python3` + requests | requests |
 
 **Authentication:**
 - GitLab: Authenticate with `glab auth login` before using (required for GitLab Job Analyzer, GitLab Branch Manager, and Konflux Release)
 - Kubernetes: Configure kubectl context with `kubectl config use-context` (required for Konflux Release)
 - AWS: Authenticate with AWS CLI (`aws configure`, SSO, or instance profile)
-- Slack: Configure API token (see skill documentation or MCP server integration)
-
+- Jira: Set `JIRA_BASE_URL`, `JIRA_TOKEN`, and optionally `JIRA_EMAIL` / `JIRA_AUTH_TYPE` environment variables
 ### Install Plugin
-
 1. Clone this repository:
    ```bash
    git clone <repository-url>
@@ -274,22 +293,23 @@ claudio-plugin/
         ├── SKILL.md             # GitLab branch creation and protection skill
         └── scripts/
             └── create_and_protect_branch.sh
+    └── jira-utilities/
+        ├── SKILL.md             # Jira REST API skill
+        └── scripts/
+            └── jira/            # Jira operation scripts (get_issue, search_issues, create_issue, …)
 ```
 
 ## Tool Management
 
 The `claudio-plugin/tools/` directory provides centralized installation scripts for CLI tools used by skills. This system ensures consistent, maintainable dependency management.
-
 **Design Principles:**
 - **Simplicity:** Scripts do one thing well - install the tool if not present
 - **Reusability:** Common functions shared via `common.sh` library
 - **Linux-only:** Focus on Linux x86_64 and ARM64 architectures
-- **Idempotent:** Safe to run multiple times
 
 **Available Tools:**
 - `aws-cli/install.sh` - AWS CLI v2 installer
 - `glab/install.sh` - glab GitLab CLI installer
-- `jq/install.sh` - jq JSON processor installer
 - `kubectl/install.sh` - kubectl Kubernetes CLI installer
 - `python/` - Python package installers (pip-based requirements.txt files)
 - `skopeo/install.sh` - skopeo container image inspector installer
@@ -343,6 +363,7 @@ Each skill includes its own test scenarios. Run skill-specific scripts directly 
 - [AWS Log Analyzer Skill](claudio-plugin/skills/aws-log-analyzer/SKILL.md)
 - [Slack Utilities Skill](claudio-plugin/skills/slack-utilities/SKILL.md)
 - [GitLab Branch Manager Skill](claudio-plugin/skills/gitlab-branch-manager/SKILL.md)
+- [Jira Utilities Skill](claudio-plugin/skills/jira-utilities/SKILL.md)
 
 ## Contributing
 
@@ -360,8 +381,5 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Author
 
-Claudio (v0.1.0)
 
-## Support
 
-For issues, questions, or feature requests, please file an issue on the GitHub repository.
