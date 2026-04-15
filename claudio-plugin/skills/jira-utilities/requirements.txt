@@ -1,4 +1,0 @@
-# Dependencies for Jira Utilities scripts
-
-# HTTP requests (for Jira REST API calls)
-requests>=2.31.0

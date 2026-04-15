@@ -66,15 +66,18 @@ claudio-plugin/
         ├── SKILL.md             # GitLab branch creation and protection skill
             └── create_and_protect_branch.sh  # Branch creation + protection
     └── jira-utilities/
-        ├── SKILL.md             # Jira REST API utilities skill
-            └── jira/
-                ├── client.py            # Shared Jira REST client (Cloud + Data Center)
-                ├── get_issue.py         # Fetch single issue by key
-                ├── search_issues.py     # JQL search
-                ├── create_issue.py      # Create new issue
-                ├── update_issue.py      # Update issue fields
-                ├── link_issues.py       # Link two issues
-                └── get_sprint.py        # Fetch sprint info from a board
+        ├── SKILL.md             # Jira utilities skill (acli-based)
+            └── scripts/
+                ├── _common.sh           # Shared auth helpers
+                ├── search_issues.sh     # JQL search
+                ├── get_issue.sh         # Fetch single issue by key
+                ├── create_issue.sh      # Create new issue
+                ├── update_issue.sh      # Update issue fields
+                ├── link_issues.sh       # Link two issues
+                ├── get_sprint.sh        # Fetch sprint info from a board
+                ├── get_board.sh         # Discover boards for a project
+                ├── cve_tracker.sh       # CVE deduplication and release clustering
+                └── setup_auth.sh        # One-time acli authentication
 ```
 
 
@@ -345,7 +348,7 @@ When a new version is released, Renovate automatically creates a PR to update th
 
 ### 5. Jira Utilities Skill
 
-**Purpose:** Manage Jira issues via the Jira REST API v3, supporting both Jira Cloud and Jira Data Center.
+**Purpose:** Manage Jira Cloud issues via the official Atlassian CLI (`acli`) and the Jira REST API v3.
 
 **Use cases:**
 - Fetch a single issue by key
@@ -355,10 +358,10 @@ When a new version is released, Renovate automatically creates a PR to update th
 - Fetch sprint information from Jira Software boards
 
 **Key features:**
-- Supports Jira Cloud (Basic auth) and Data Center (Bearer/PAT) authentication
-- Python REST API integration — no unmaintained third-party CLI required
-- Standalone scripts usable independently or imported by other skills
-- Full test suite with mocked HTTP calls (no real Jira instance required)
+- Jira Cloud only (Basic auth via `acli`)
+- acli-based scripts — no Python or unmaintained third-party CLI required
+- Custom fields (priority, component, team, activity-type) applied via REST PATCH
+- CVE deduplication and release-date clustering via embedded jq analysis
 
 ## Prerequisites
 
@@ -386,11 +389,11 @@ Each skill has its own dependencies:
 - Optional: `jq` for JSON parsing and output formatting
 
 **Jira Utilities Skill:**
-- `python3` + `requests` library (`pip3 install -r requirements.txt`)
-- `JIRA_BASE_URL` - Jira instance URL (e.g., `https://yourorg.atlassian.net`)
-- `JIRA_TOKEN` - API token (Cloud) or Personal Access Token (Data Center)
-- `JIRA_EMAIL` - User email (Cloud auth only)
-- `JIRA_AUTH_TYPE` - `cloud` or `datacenter` (default: `cloud`)
+- `acli` - Official Atlassian CLI (installed via `tools/acli/install.sh`)
+- `jq` - JSON processor (installed via `tools/jq/install.sh`)
+- `JIRA_SITE` - Atlassian site hostname (e.g., `yourorg.atlassian.net` — no `https://` prefix)
+- `JIRA_TOKEN` - API token from Atlassian account settings → Security → API tokens
+- `JIRA_EMAIL` - Your Atlassian account email
 
 ## Installation
 
