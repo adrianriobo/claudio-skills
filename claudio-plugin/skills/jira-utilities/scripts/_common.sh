@@ -28,16 +28,38 @@ require_env() {
 # Skips the network round-trip if credentials for this site are already stored.
 ensure_auth() {
     require_env
-    if grep -qrs "$JIRA_SITE" "${HOME}/.config/acli/" 2>/dev/null; then
+    # Strip scheme prefix so the grep matches regardless of whether JIRA_SITE
+    # was exported as "yourorg.atlassian.net" or "https://yourorg.atlassian.net".
+    local site_host="${JIRA_SITE#https://}"
+    site_host="${site_host#http://}"
+    if grep -qrs "$site_host" "${HOME}/.config/acli/" 2>/dev/null; then
         return 0
     fi
     echo "$JIRA_TOKEN" | acli jira auth login \
-        --site "$JIRA_SITE" \
+        --site "$site_host" \
         --email "$JIRA_EMAIL" \
         --token 2>/dev/null || {
         echo "ERROR: acli authentication failed. Verify JIRA_SITE, JIRA_EMAIL, and JIRA_TOKEN." >&2
         exit 4
     }
+}
+
+# Normalize JIRA_SITE to a full https:// URL regardless of how it was exported.
+jira_site_url() {
+    local site="${JIRA_SITE%/}"
+    [[ "$site" != https://* && "$site" != http://* ]] && site="https://${site}"
+    echo "$site"
+}
+
+# Make a Jira REST API call.
+# Usage: jira_rest GET|POST|PUT|DELETE <path> [json_body]
+# Output: raw response body (may be empty on 204 No Content)
+jira_rest() {
+    require_env
+    local method="$1" path="$2" body="${3:-}"
+    local args=(-s -u "${JIRA_EMAIL}:${JIRA_TOKEN}" -H "Content-Type: application/json")
+    [[ -n "$body" ]] && args+=(-d "$body")
+    curl "${args[@]}" -X "$method" "$(jira_site_url)${path}"
 }
 
 # Write JSON to a temp file and echo the path.
